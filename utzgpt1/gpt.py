@@ -15,14 +15,17 @@ encode = lambda s: [stoi[c] for c in s]
 decode = lambda l: ''.join([itos[i] for i in l])
 
 data = torch.tensor(encode(text), dtype=torch.long)
-n = int(0.9 * len(data))
-train_data = data[:n]
-val_data = data[n:]
+# n = int(0.9 * len(data))
+# train_data = data[:n]
+# val_data = data[n:]
+
+train_data = os.path.join('large-762M-k40.train.csv')
+valid_data = os.path.join('large-762M-k40.valid.csv')
 
 import random
 
 def get_batch(split):
-    data_split = train_data if split == 'train' else val_data
+    data_split = train_data if split == 'train' else valid_data
     ix = torch.randint(len(data_split) - block_size, (batch_size,))
     x = torch.stack([data_split[i:i+block_size] for i in ix])
     y = torch.stack([data_split[i+1:i+block_size+1] for i in ix])
