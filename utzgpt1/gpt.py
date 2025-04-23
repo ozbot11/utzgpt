@@ -1,3 +1,6 @@
+import os
+import torch
+
 with open('input.txt', 'r', encoding='utf-8') as f:
     text = f.read()
 
@@ -11,16 +14,12 @@ encode = lambda s: [stoi[c] for c in s]
 
 decode = lambda l: ''.join([itos[i] for i in l])
 
-import torch
-
 data = torch.tensor(encode(text), dtype=torch.long)
 n = int(0.9 * len(data))
 train_data = data[:n]
 val_data = data[n:]
 
 import random
-block_size = 64
-batch_size = 4
 
 def get_batch(split):
     data_split = train_data if split == 'train' else val_data
@@ -32,18 +31,19 @@ def get_batch(split):
 from model import GPTLanguageModel
 
 # -------------------- Hyperparameters --------------------
-block_size = 8
-batch_size = 4
+block_size = 128
+batch_size = 16
 # max_iters = 100000 # 50000 # 3000
 # eval_interval = 500 # 1000 # 300
-max_iters = 20000
-eval_interval = 500
-learning_rate = 1e-3
+max_iters = 100_000
+eval_interval = 1000
+learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-eval_iters = 100
-n_embd = 128 # 64
-n_head = 4
-n_layer = 6 # 4
+print(f"Using device: {device}")
+eval_iters = 200
+n_embd = 768 # 64
+n_head = 12
+n_layer = 12 # 4
 # -------------------- Model Initialization --------------------
 model = GPTLanguageModel(vocab_size, block_size, n_embd, n_head, n_layer)
 model = model.to(device)
@@ -65,19 +65,30 @@ def estimate_loss():
     model.train()
     return out
 
-for iter in range(max_iters):
-    # periodically evaluate loss
-    if iter % eval_interval == 0:
-        losses = estimate_loss()
-        print(f"Step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
-    xb, yb = get_batch('train')
-    xb, yb = xb.to(device), yb.to(device)
+begin_iter = 0
+if os.path.exists('model.pth'):
+    print("Loading existing model...")
+    model.load_state_dict(torch.load('model.pth'))
+    begin_iter = model.state_dict().get('iter', 14000)
 
-    logits, loss = model(xb, yb)
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    optimizer.step()
+
+# for iter in range(begin_iter, max_iters):
+#     print(f"Iteration {iter+1}/{max_iters}", end='\r')
+#     # periodically evaluate loss
+#     if iter % eval_interval == 0:
+#         losses = estimate_loss()
+#         print(f"Step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+#         model.state_dict()['iter'] = iter
+#         torch.save(model.state_dict(), 'model.pth')
+
+#     xb, yb = get_batch('train')
+#     xb, yb = xb.to(device), yb.to(device)
+
+#     logits, loss = model(xb, yb)
+#     optimizer.zero_grad(set_to_none=True)
+#     loss.backward()
+#     optimizer.step()
 
 # -------------------- Generate Text --------------------
 # context = torch.zeros((1, 1), dtype=torch.long).to(device)  # Start with the token "0"
@@ -85,7 +96,11 @@ for iter in range(max_iters):
 # print("\n--- Generated Text ---\n")
 # print(decode(generated[0].tolist()))
 
-context = torch.zeros((1, 1), dtype=torch.long).to(device)
-generated = model.generate(context, max_new_tokens=300, temperature=0.9)
+context = torch.tensor(encode("Winter is coming"), dtype=torch.long).unsqueeze(0).to(device)
+
+# context = torch.zeros((1, 1), dtype=torch.long).to(device)
+
+generated = model.generate(context, max_new_tokens=300, temperature=0.001)
+print("\n--- Generated Text ---\n")
 print(decode(generated[0].tolist()))
-print(decode(generated[0].tolist()))
+print("\n--- Generated Text ---\n")
