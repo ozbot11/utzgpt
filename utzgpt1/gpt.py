@@ -1,109 +1,92 @@
-import os
 import torch
+import torch.nn.functional as F
+import pandas as pd
+from model import GPTLanguageModel
 
-with open('input.txt', 'r', encoding='utf-8') as f:
-    text = f.read()
+# -------------------- Load CSV and Extract Text --------------------
+def load_csv_text(path, column='text'):
+    df = pd.read_csv(path)
+    return '\n'.join(df[column].astype(str).tolist())
 
-chars = sorted(list(set(text)))
+train_text = load_csv_text('your_dataset/train.csv')
+val_text   = load_csv_text('your_dataset/val.csv')
+test_text  = load_csv_text('your_dataset/test.csv')
+
+# Combine all text to build the vocabulary
+all_text = train_text + val_text + test_text
+chars = sorted(list(set(all_text)))
 vocab_size = len(chars)
 
 stoi = { ch:i for i,ch in enumerate(chars) }
 itos = { i:ch for i,ch in enumerate(chars) }
-
 encode = lambda s: [stoi[c] for c in s]
-
 decode = lambda l: ''.join([itos[i] for i in l])
 
-data = torch.tensor(encode(text), dtype=torch.long)
-# n = int(0.9 * len(data))
-# train_data = data[:n]
-# val_data = data[n:]
+# Encode datasets
+train_data = torch.tensor(encode(train_text), dtype=torch.long)
+val_data   = torch.tensor(encode(val_text), dtype=torch.long)
+test_data  = torch.tensor(encode(test_text), dtype=torch.long)
 
-train_data = os.path.join('large-762M-k40.train.csv')
-valid_data = os.path.join('large-762M-k40.valid.csv')
+# -------------------- Hyperparameters --------------------
+block_size = 512
+batch_size = 64
+max_iters = 100_000
+eval_interval = 1000
+eval_iters = 200
+learning_rate = 3e-4
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+n_embd = 768
+n_head = 12
+n_layer = 12
 
-import random
-
+# -------------------- Batch Loader --------------------
 def get_batch(split):
-    data_split = train_data if split == 'train' else valid_data
+    data_split = {
+        'train': train_data,
+        'val': val_data,
+        'test': test_data
+    }[split]
+
     ix = torch.randint(len(data_split) - block_size, (batch_size,))
     x = torch.stack([data_split[i:i+block_size] for i in ix])
     y = torch.stack([data_split[i+1:i+block_size+1] for i in ix])
-    return x, y
+    return x.to(device), y.to(device)
 
-from model import GPTLanguageModel
-
-# -------------------- Hyperparameters --------------------
-block_size = 128
-batch_size = 16
-# max_iters = 100000 # 50000 # 3000
-# eval_interval = 500 # 1000 # 300
-max_iters = 100_000
-eval_interval = 1000
-learning_rate = 3e-4
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-print(f"Using device: {device}")
-eval_iters = 200
-n_embd = 768 # 64
-n_head = 12
-n_layer = 12 # 4
-# -------------------- Model Initialization --------------------
+# -------------------- Model Setup --------------------
 model = GPTLanguageModel(vocab_size, block_size, n_embd, n_head, n_layer)
 model = model.to(device)
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
-# -------------------- Evaluation Helper --------------------
+# -------------------- Eval Helper --------------------
 @torch.no_grad()
 def estimate_loss():
     out = {}
     model.eval()
-    for split in ['train', 'val']:
+    for split in ['train', 'val', 'test']:
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
             xb, yb = get_batch(split)
-            xb, yb = xb.to(device), yb.to(device)
             _, loss = model(xb, yb)
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
     return out
 
+# -------------------- Training Loop --------------------
+for iter in range(max_iters):
+    if iter % eval_interval == 0:
+        losses = estimate_loss()
+        print(f"Step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, test loss {losses['test']:.4f}")
+        torch.save(model.state_dict(), f'checkpoints/model_step{iter}.pt')
 
-begin_iter = 0
-if os.path.exists('model.pth'):
-    print("Loading existing model...")
-    model.load_state_dict(torch.load('model.pth'))
-    begin_iter = model.state_dict().get('iter', 14000)
+    xb, yb = get_batch('train')
+    logits, loss = model(xb, yb)
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    optimizer.step()
 
-
-# for iter in range(begin_iter, max_iters):
-#     print(f"Iteration {iter+1}/{max_iters}", end='\r')
-#     # periodically evaluate loss
-#     if iter % eval_interval == 0:
-#         losses = estimate_loss()
-#         print(f"Step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-#         model.state_dict()['iter'] = iter
-#         torch.save(model.state_dict(), 'model.pth')
-
-#     xb, yb = get_batch('train')
-#     xb, yb = xb.to(device), yb.to(device)
-
-#     logits, loss = model(xb, yb)
-#     optimizer.zero_grad(set_to_none=True)
-#     loss.backward()
-#     optimizer.step()
-
-# -------------------- Generate Text --------------------
-# context = torch.zeros((1, 1), dtype=torch.long).to(device)  # Start with the token "0"
-# generated = model.generate(context, max_new_tokens=200)
-# print("\n--- Generated Text ---\n")
-# print(decode(generated[0].tolist()))
-
-context = torch.tensor(encode("Winter is coming"), dtype=torch.long).unsqueeze(0).to(device)
-
-# context = torch.zeros((1, 1), dtype=torch.long).to(device)
-
-generated = model.generate(context, max_new_tokens=300, temperature=0.001)
+# -------------------- Text Generation --------------------
+context = torch.zeros((1, 1), dtype=torch.long).to(device)
+generated = model.generate(context, max_new_tokens=500, temperature=0.9)
 print("\n--- Generated Text ---\n")
 print(decode(generated[0].tolist()))
-print("\n--- Generated Text ---\n")
